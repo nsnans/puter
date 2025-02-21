@@ -48,8 +48,11 @@ const configurable_auth = options => async (req, res, next) => {
     // auth middleware, it makes more sense to put it here.
 
     let token;
+    // Auth token in body
+    if(req.body && req.body.auth_token)
+        token = req.body.auth_token;
     // HTTML Auth header
-    if(req.header && req.header('Authorization'))
+    else if(req.header && req.header('Authorization'))
         token = req.header('Authorization');
     // Cookie
     else if(req.cookies && req.cookies[config.cookie_name])

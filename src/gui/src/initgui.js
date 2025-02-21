@@ -361,29 +361,13 @@ window.initgui = async function(options){
         let response = await window.checkUserSiteRelationship(window.openerOrigin);
         window.userAppToken = response.token;
 
-        if(!picked_a_user_for_sdk_login && window.logged_in_users.length > 0 && (!window.userAppToken || window.url_query_params.get('request_auth') )){
-            await UIWindowSessionList({
+        if(!picked_a_user_for_sdk_login && window.logged_in_users.length > 1 && (!window.userAppToken || window.url_query_params.get('request_auth') )){
+            picked_a_user_for_sdk_login = await UIWindowSessionList({
                 reload_on_success: false,
                 draggable_body: false,
                 has_head: false,
                 cover_page: true,
             });
-        }
-        // if not and action is show-open-file-picker, we need confirmation before proceeding
-        if(action === 'show-open-file-picker' || action === 'show-save-file-picker' || action === 'show-directory-picker'){
-            if(!window.userAppToken){
-                let is_confirmed = await PuterDialog();
-
-                if(is_confirmed === false){
-                    if(!window.is_auth()){
-                        window.first_visit_ever = false;
-                        localStorage.removeItem("has_visited_before", true);
-                    }
-
-                    window.close();
-                    window.open('','_self').close();
-                }
-            }
         }
     }
     // -------------------------------------------------------------------------------------

@@ -92,6 +92,22 @@ class PuterAIModule extends AdvancedBase {
             // services.registerService('claude', ClaudeEnoughService);
         }
 
+        if ( !! config?.services?.['deepseek'] ) {
+            const { DeepSeekService } = require('./DeepSeekService');
+            services.registerService('deepseek', DeepSeekService);
+
+            // const { ClaudeEnoughService } = require('./ClaudeEnoughService');
+            // services.registerService('claude', ClaudeEnoughService);
+        }
+        if ( !! config?.services?.['gemini'] ) {
+            const { GeminiService } = require('./GeminiService');
+            services.registerService('gemini', GeminiService);
+        }
+        if ( !! config?.services?.['openrouter'] ) {
+            const { OpenRouterService } = require('./OpenRouterService');
+            services.registerService('openrouter', OpenRouterService);
+        }
+
         const { AIChatService } = require('./AIChatService');
         services.registerService('ai-chat', AIChatService);
 

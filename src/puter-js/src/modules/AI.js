@@ -237,6 +237,9 @@ class AI{
         if ( options.model === 'groq' ) {
             options.model = 'llama3-8b-8192';
         }
+        if ( options.model === 'deepseek' ) {
+            options.model = 'deepseek-chat';
+        }
 
         // map model to the appropriate driver
         if (!options.model || options.model === 'gpt-4o' || options.model === 'gpt-4o-mini') {
@@ -270,10 +273,33 @@ class AI{
         }else if(options.model === 'grok-beta') {
             driver = 'xai';
         }
+        else if(
+            options.model === 'deepseek-chat' ||
+            options.model === 'deepseek-reasoner'
+        ){
+            driver = 'deepseek';
+        }
+        else if(
+            options.model === 'gemini-1.5-flash' ||
+            options.model === 'gemini-2.0-flash'
+        ){
+            driver = 'gemini';
+        }
+        else if ( options.model.startsWith('openrouter:') ) {
+            driver = 'openrouter';
+        }
 
         // stream flag from settings
         if(settings.stream !== undefined && typeof settings.stream === 'boolean'){
             options.stream = settings.stream;
+        }
+
+        // settings to pass
+        const SETTINGS_TO_PASS = ['tools', 'response'];
+        for ( const name of SETTINGS_TO_PASS ) {
+            if ( settings[name] ) {
+                options[name] = settings[name];
+            }
         }
 
         // Call the original chat.complete method
