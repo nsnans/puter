@@ -18,7 +18,9 @@
  */
 
 // METADATA // {"ai-commented":{"service":"claude"}}
+const { PassThrough } = require("stream");
 const APIError = require("../../api/APIError");
+const config = require("../../config");
 const { PermissionUtil } = require("../../services/auth/PermissionService");
 const BaseService = require("../../services/BaseService");
 const { DB_WRITE } = require("../../services/database/consts");
@@ -26,6 +28,9 @@ const { TypeSpec } = require("../../services/drivers/meta/Construct");
 const { TypedValue } = require("../../services/drivers/meta/Runtime");
 const { Context } = require("../../util/context");
 const { AsModeration } = require("./lib/AsModeration");
+const FunctionCalling = require("./lib/FunctionCalling");
+const Messages = require("./lib/Messages");
+const Streaming = require("./lib/Streaming");
 
 // Maximum number of fallback attempts when a model fails, including the first attempt
 const MAX_FALLBACKS = 3 + 1; // includes first attempt
@@ -80,37 +85,60 @@ class AIChatService extends BaseService {
                 app_id: details.actor?.type?.app?.id ?? null,
                 service_name: details.service_used,
                 model_name: details.model_used,
-                value_uint_1: details.usage?.input_tokens,
-                value_uint_2: details.usage?.output_tokens,
             };
 
-            let model_details = this.detail_model_map[details.model_used];
-            if ( Array.isArray(model_details) ) {
-                for ( const model of model_details ) {
-                    if ( model.provider === details.service_used ) {
-                        model_details = model;
-                        break;
+            // New format
+            if ( Array.isArray(details.usage) ) {
+                values.cost = details.usage.reduce((acc, u) => {
+                    return acc + u.cost;
+                }, 0);
+            } else {
+                values.value_uint_1 = details.usage?.input_tokens;
+                values.value_uint_2 = details.usage?.output_tokens;
+
+                let model_details = this.detail_model_map[details.model_used];
+                if ( Array.isArray(model_details) ) {
+                    for ( const model of model_details ) {
+                        if ( model.provider === details.service_used ) {
+                            model_details = model;
+                            break;
+                        }
                     }
                 }
-            }
-            if ( Array.isArray(model_details) ) {
-                model_details = model_details[0];
-            }
-            if ( model_details ) {
-                values.cost = 0 + // for formatting
+                if ( Array.isArray(model_details) ) {
+                    model_details = model_details[0];
+                }
+                if ( model_details ) {
+                    values.cost = 0 + // for formatting
 
-                    model_details.cost.input  * details.usage.input_tokens
-                    //            cents/MTok                        tokens
-                                              +
+                        model_details.cost.input  * details.usage.input_tokens
+                        //            cents/MTok                        tokens
+                                                +
 
-                    model_details.cost.output * details.usage.output_tokens
-                    //            cents/MTok                        tokens
-                    ;
-            } else {
-                this.log.error('could not find model details', { details });
+                        model_details.cost.output * details.usage.output_tokens
+                        //            cents/MTok                        tokens
+                        ;
+                } else {
+                    this.log.error('could not find model details', { details });
+                }
             }
+
+            this.log.noticeme('USAGE INFO', { usage: details.usage });
+            this.log.noticeme('COST INFO', values);
+
 
             await this.db.insert('ai_usage', values);
+
+            // USD cost from microcents
+            const cost_usc = values.cost / 1000000;
+            const cost_usd = cost_usc / 100;
+
+            // Add to TrackSpendingService
+            const svc_spending = this.services.get('spending');
+            svc_spending.record_cost(`${details.service_used}:chat-completion`, {
+                timestamp: Date.now(),
+                cost: cost_usd,
+            });
         });
         
         const svc_apiErrpr = this.services.get('api-error');
@@ -339,6 +367,11 @@ class AIChatService extends BaseService {
                     test_mode = true;
                 }
                 
+                if ( parameters.messages ) {
+                    parameters.messages =
+                        Messages.normalize_messages(parameters.messages);
+                }
+
                 if ( ! test_mode && ! await this.moderate(parameters) ) {
                     test_mode = true;
                 }
@@ -354,10 +387,14 @@ class AIChatService extends BaseService {
                     }
                 }
 
+                if ( parameters.tools ) {
+                    FunctionCalling.normalize_tools_object(parameters.tools);
+                }
+
                 if ( intended_service === this.service_name ) {
                     throw new Error('Calling ai-chat directly is not yet supported');
                 }
-                
+
                 const svc_driver = this.services.get('driver');
                 let ret, error;
                 let service_used = intended_service;
@@ -373,6 +410,7 @@ class AIChatService extends BaseService {
                     ret = await svc_driver.call_new_({
                         actor: Context.get('actor'),
                         service_name: intended_service,
+                        skip_usage: true,
                         iface: 'puter-chat-completion',
                         method: 'complete',
                         args: parameters,
@@ -385,7 +423,40 @@ class AIChatService extends BaseService {
                     tried.push(model);
 
                     error = e;
+                    
+                    // Distinguishing between user errors and service errors
+                    // is very messy because of different conventions between
+                    // services. This is a best-effort attempt to catch user
+                    // errors and throw them as 400s.
+                    const is_request_error = (() => {
+                        if ( e instanceof APIError ) {
+                            return true;
+                        }
+                        if ( e.type === 'invalid_request_error' ) {
+                            return true;
+                        }
+                        let some_error = e;
+                        while ( some_error ) {
+                            if ( some_error.type === 'invalid_request_error' ) {
+                                return true;
+                            }
+                            some_error = some_error.error ?? some_error.cause;
+                        }
+                        return false;
+                    })();
+
+                    if ( is_request_error ) {
+                        throw APIError.create('error_400_from_delegate', null, {
+                            delegate: intended_service,
+                            message: e.message,
+                        })
+                    }
                     console.error(e);
+
+                    if ( config.disable_fallback_mechanisms ) {
+                        throw e;
+                    }
+
                     this.log.error('error calling service', {
                         intended_service,
                         model,
@@ -420,6 +491,7 @@ class AIChatService extends BaseService {
                             ret = await svc_driver.call_new_({
                                 actor: Context.get('actor'),
                                 service_name: fallback_service_name,
+                                skip_usage: true,
                                 iface: 'puter-chat-completion',
                                 method: 'complete',
                                 args: {
@@ -468,6 +540,34 @@ class AIChatService extends BaseService {
                             usage,
                         });
                     })();
+
+                    if ( ret.result.value.init_chat_stream ) {
+                        const stream = new PassThrough();
+                        const retval = new TypedValue({
+                            $: 'stream',
+                            content_type: 'application/x-ndjson',
+                            chunked: true,
+                        }, stream);
+
+                        const chatStream = new Streaming.AIChatStream({
+                            stream,
+                        });
+
+                        (async () => {
+                            try {
+                                await ret.result.value.init_chat_stream({ chatStream });
+                            } catch (e) {
+                                stream.write(JSON.stringify({
+                                    type: 'error',
+                                    message: e.message,
+                                }) + '\n');
+                                stream.end();
+                            }
+                        })();
+
+                        return retval;
+                    }
+
                     return ret.result.value.response;
                 } else {
                     await svc_event.emit('ai.prompt.report-usage', {
@@ -488,6 +588,17 @@ class AIChatService extends BaseService {
                     model_used,
                     service_used,
                 });
+
+
+                if ( parameters.response?.normalize ) {
+                    ret.result.message =
+                       Messages.normalize_single_message(ret.result.message);
+                    ret.result = {
+                        message: ret.result.message,
+                        via_ai_chat_service: true,
+                        normalized: true,
+                    };
+                }
 
                 return ret.result;
             }
@@ -551,6 +662,10 @@ class AIChatService extends BaseService {
     async moderate ({ messages }) {
         for ( const msg of messages ) {
             const texts = [];
+            
+            // Function calls have no content
+            if ( msg.content === null ) continue;
+
             if ( typeof msg.content === 'string' ) texts.push(msg.content);
             else if ( typeof msg.content === 'object' ) {
                 if ( Array.isArray(msg.content) ) {

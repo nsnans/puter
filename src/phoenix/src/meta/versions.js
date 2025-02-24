@@ -18,6 +18,18 @@
  */
 export const SHELL_VERSIONS = [
     {
+        v: '0.2.6',
+        changes: [
+            'add PDE execution from /admin/Public/bin',
+        ]
+    },
+    {
+        v: '0.2.5',
+        changes: [
+            'fixed app command provider exit',
+        ]
+    },
+    {
         v: '0.2.4',
         changes: [
             'more completers for tab-completion',
