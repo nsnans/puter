@@ -75,8 +75,10 @@ class AIInterfaceService extends BaseService {
                     description: 'Get completions for a chat log.',
                     parameters: {
                         messages: { type: 'json' },
+                        tools: { type: 'json' },
                         vision: { type: 'flag' },
                         stream: { type: 'flag' },
+                        response: { type: 'json' },
                         model: { type: 'string' },
                     },
                     result: { type: 'json' },

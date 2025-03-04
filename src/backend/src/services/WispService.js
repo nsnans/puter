@@ -45,7 +45,10 @@ class WispService extends BaseService {
                 }, {
                     expiresIn: '1d',
                 });
-                res.json({ token });
+                res.json({
+                    token,
+                    server: this.config.server,
+                });
             }
         }).attach(r_wisp);
 
@@ -73,7 +76,7 @@ class WispService extends BaseService {
 
                 const event = {
                     allow: true,
-                    policy: {},
+                    policy: { allow: true },
                     user: await svc_getUser.get_user({
                         uuid: decoded.user_uid,
                     }),

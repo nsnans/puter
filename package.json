@@ -1,6 +1,6 @@
 {
   "name": "puter.com",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "author": "Puter Technologies Inc.",
   "license": "AGPL-3.0-only",
   "description": "Desktop environment in the browser!",
@@ -47,6 +47,7 @@
     ]
   },
   "dependencies": {
+    "dedent": "^1.5.3",
     "javascript-time-ago": "^2.5.11",
     "json-colorizer": "^3.0.1",
     "open": "^10.1.0",

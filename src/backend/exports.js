@@ -34,7 +34,11 @@ const { PuterFSModule } = require("./src/modules/puterfs/PuterFSModule.js");
 const { PerfMonModule } = require("./src/modules/perfmon/PerfMonModule.js");
 const { AppsModule } = require("./src/modules/apps/AppsModule.js");
 const { DevelopmentModule } = require("./src/modules/development/DevelopmentModule.js");
-
+const { HostOSModule } = require("./src/modules/hostos/HostOSModule.js");
+const { InternetModule } = require("./src/modules/internet/InternetModule.js");
+const { PuterExecModule } = require("./src/modules/puterexec/PuterExecModule.js");
+const { MailModule } = require("./src/modules/mail/MailModule.js");
+const { ConvertModule } = require("./src/modules/convert/ConvertModule.js");
 
 module.exports = {
     helloworld: () => {
@@ -52,6 +56,7 @@ module.exports = {
     EssentialModules: [
         Core2Module,
         PuterFSModule,
+        HostOSModule,
         CoreModule,
         WebModule,
         TemplateModule,
@@ -66,7 +71,11 @@ module.exports = {
     SelfHostedModule,
     TestDriversModule,
     PuterAIModule,
+    PuterExecModule,
     BroadcastModule,
+    InternetModule,
+    MailModule,
+    ConvertModule,
     
     // Development modules
     PerfMonModule,

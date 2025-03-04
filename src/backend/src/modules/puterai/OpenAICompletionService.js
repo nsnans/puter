@@ -24,8 +24,14 @@ const { TypedValue } = require('../../services/drivers/meta/Runtime');
 const { Context } = require('../../util/context');
 const smol = require('@heyputer/putility').libs.smol;
 const { nou } = require('../../util/langutil');
+const OpenAIUtil = require('./lib/OpenAIUtil');
 const { TeePromise } = require('@heyputer/putility').libs.promise;
 
+const PUTER_PROMPT = `
+    You are running on an open-source platform called Puter,
+    as the DeepSeek implementation for a driver interface
+    called puter-chat-completion.
+`.replace('\n', ' ').trim();
 
 /**
 * OpenAICompletionService class provides an interface to OpenAI's chat completion API.
@@ -115,6 +121,15 @@ class OpenAICompletionService extends BaseService {
                     output: 1200,
                 }
             },
+            {
+                id: 'o3-mini',
+                cost: {
+                    currency: 'usd-cents',
+                    tokens: 1_000_000,
+                    input: 110,
+                    output: 440,
+                }
+            },
         ];
     }
 
@@ -148,53 +163,10 @@ class OpenAICompletionService extends BaseService {
                 return model_names;
             },
 
-            /**
-             * AI Chat completion method.
-             * See AIChatService for more details.
-             */
-            async complete ({ messages, test_mode, stream, model }) {
-
-                // for now this code (also in AIChatService.js) needs to be
-                // duplicated because this hasn't been moved to be under
-                // the centralised controller yet
-                const svc_event = this.services.get('event');
-                const event = {
-                    allow: true,
-                    intended_service: 'openai',
-                    parameters: { messages }
-                };
-                await svc_event.emit('ai.prompt.validate', event);
-                if ( ! event.allow ) {
-                    test_mode = true;
-                }
-                
-                if ( test_mode ) {
-                    const { LoremIpsum } = require('lorem-ipsum');
-                    const li = new LoremIpsum({
-                        sentencesPerParagraph: {
-                            max: 8,
-                            min: 4
-                        },
-                        wordsPerSentence: {
-                            max: 20,
-                            min: 12
-                        },
-                    });
-                    return {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": li.generateParagraphs(
-                                Math.floor(Math.random() * 3) + 1
-                            ),
-                        },
-                        "logprobs": null,
-                        "finish_reason": "stop"
-                    }
-                }
-
+            async complete ({ messages, test_mode, stream, model, tools }) {
                 return await this.complete(messages, {
                     model: model,
+                    tools,
                     moderation: true,
                     stream,
                 });
@@ -242,7 +214,7 @@ class OpenAICompletionService extends BaseService {
     * @returns {Promise<Object>} The completion response containing message and usage info
     * @throws {Error} If messages are invalid or content is flagged by moderation
     */
-    async complete (messages, { stream, moderation, model }) {
+    async complete (messages, { stream, moderation, model, tools }) {
         // Validate messages
         if ( ! Array.isArray(messages) ) {
             throw new Error('`messages` must be an array');
@@ -250,48 +222,9 @@ class OpenAICompletionService extends BaseService {
 
         model = model ?? this.get_default_model();
 
-        for ( let i = 0; i < messages.length; i++ ) {
-            let msg = messages[i];
-            if ( typeof msg === 'string' ) msg = { content: msg };
-            if ( typeof msg !== 'object' ) {
-                throw new Error('each message must be a string or an object');
-            }
-            if ( ! msg.role ) msg.role = 'user';
-            if ( ! msg.content ) {
-                throw new Error('each message must have a `content` property');
-            }
-
-            const texts = [];
-            if ( typeof msg.content === 'string' ) texts.push(msg.content);
-            else if ( typeof msg.content === 'object' ) {
-                if ( Array.isArray(msg.content) ) {
-                    texts.push(...msg.content.filter(o => (
-                        ( ! o.type && o.hasOwnProperty('text') ) ||
-                        o.type === 'text')).map(o => o.text));
-                }
-                else texts.push(msg.content.text);
-            }
-
-            this.log.noticeme('OPENAI MODERATION CHECK', {
-                moderation,
-                context_value: Context.get('moderated'),
-            })
-            if ( moderation && ! Context.get('moderated') ) {
-                console.log('RAN MODERATION');
-                for ( const text of texts ) {
-                    const moderation_result = await this.check_moderation(text);
-                    if ( moderation_result.flagged ) {
-                        throw new Error('message is not allowed');
-                    }
-                }
-            }
-
-            messages[i] = msg;
-        }
-
         messages.unshift({
             role: 'system',
-            content: 'You are running inside a Puter app.',
+            content: PUTER_PROMPT,
         })
         // messages.unshift({
         //     role: 'system',
@@ -312,166 +245,27 @@ class OpenAICompletionService extends BaseService {
         // Here's something fun; the documentation shows `type: 'image_url'` in
         // objects that contain an image url, but everything still works if
         // that's missing. We normalise it here so the token count code works.
-        for ( const msg of messages ) {
-            if ( ! msg.content ) continue;
-            if ( typeof msg.content !== 'object' ) continue;
-
-            const content = smol.ensure_array(msg.content);
-
-            for ( const o of content ) {
-                if ( ! o.hasOwnProperty('image_url') ) continue;
-                if ( o.type ) continue;
-                o.type = 'image_url';
-            }
-        }
-
-        console.log('DATA GOING IN', messages);
-
-        // Count tokens
-        let token_count = 0;
-        {
-            const enc = this.modules.tiktoken.encoding_for_model(model);
-            const text = JSON.stringify(messages)
-            const tokens = enc.encode(text);
-            token_count += tokens.length;
-        }
-
-        // Subtract image urls
-        for ( const msg of messages ) {
-            // console.log('msg and content', msg, msg.content);
-            if ( ! msg.content ) continue;
-            if ( typeof msg.content !== 'object' ) continue;
-
-            const content = smol.ensure_array(msg.content);
-
-            for ( const o of content ) {
-                // console.log('part of content', o);
-                if ( o.type !== 'image_url' ) continue;
-                const enc = this.modules.tiktoken.encoding_for_model(model);
-                const text = o.image_url?.url ?? '';
-                const tokens = enc.encode(text);
-                token_count -= tokens.length;
-            }
-        }
-
-        const max_tokens = 4096 - token_count;
-        console.log('MAX TOKENS ???', max_tokens);
-
-        const svc_apiErrpr = this.services.get('api-error');
-        if ( max_tokens <= 8 ) {
-            throw svc_apiErrpr.create('max_tokens_exceeded', {
-                input_tokens: token_count,
-                max_tokens: 4096 - 8,
-            });
-        }
+        messages = await OpenAIUtil.process_input_messages(messages);
 
         const completion = await this.openai.chat.completions.create({
             user: user_private_uid,
             messages: messages,
             model: model,
-            max_tokens,
+            ...(tools ? { tools } : {}),
+            // max_tokens,
             stream,
             ...(stream ? {
                 stream_options: { include_usage: true },
             } : {}),
         });
 
-        if ( stream ) {
-            let usage_promise = new TeePromise();
-        
-            const entire = [];
-            const stream = new PassThrough();
-            const retval = new TypedValue({
-                $: 'stream',
-                content_type: 'application/x-ndjson',
-                chunked: true,
-            }, stream);
-            (async () => {
-                for await ( const chunk of completion ) {
-                    entire.push(chunk);
-                    if ( chunk.usage ) {
-                        usage_promise.resolve({
-                            input_tokens: chunk.usage.prompt_tokens,
-                            output_tokens: chunk.usage.completion_tokens,
-                        });
-                        continue;
-                    }
-                    if ( chunk.choices.length < 1 ) continue;
-                    if ( nou(chunk.choices[0].delta.content) ) continue;
-                    const str = JSON.stringify({
-                        text: chunk.choices[0].delta.content
-                    });
-                    stream.write(str + '\n');
-                }
-                stream.end();
-            })();
-            
-            return new TypedValue({ $: 'ai-chat-intermediate' }, {
-                stream: true,
-                response: retval,
-                usage_promise: usage_promise,
-            });
-            return retval;
-        }
-
-
-        this.log.info('how many choices?: ' + completion.choices.length);
-
-        // Record spending information
-        const spending_meta = {};
-        spending_meta.timestamp = Date.now();
-        spending_meta.count_tokens_input = token_count;
-        /**
-        * Records spending metadata for the chat completion request and performs token counting.
-        * Initializes metadata object with timestamp and token counts for both input and output.
-        * Uses tiktoken to count output tokens from the completion response.
-        * Records spending data via spending service and increments usage counters.
-        * @private
-        */
-        spending_meta.count_tokens_output = (() => {
-            // count output tokens (overestimate)
-            const enc = this.modules.tiktoken.encoding_for_model(model);
-            const text = JSON.stringify(completion.choices);
-            const tokens = enc.encode(text);
-            return tokens.length;
-        })();
-
-        const svc_spending = Context.get('services').get('spending');
-        svc_spending.record_spending('openai', 'chat-completion', spending_meta);
-
-        const svc_counting = Context.get('services').get('counting');
-        svc_counting.increment({
-            service_name: 'openai:chat-completion',
-            service_type: 'gpt',
-            values: {
-                model,
-                input_tokens: token_count,
-                output_tokens: spending_meta.count_tokens_output,
-            }
+        return OpenAIUtil.handle_completion_output({
+            usage_calculator: OpenAIUtil.create_usage_calculator({
+                model_details: (await this.models_()).find(m => m.id === model),
+            }),
+            stream, completion,
+            moderate: moderation && this.check_moderation.bind(this),
         });
-
-        const is_empty = completion.choices?.[0]?.message?.content?.trim() === '';
-        if ( is_empty ) {
-            // GPT refuses to generate an empty response if you ask it to,
-            // so this will probably only happen on an error condition.
-            throw new Error('an empty response was generated');
-        }
-
-        // We need to moderate the completion too
-        if ( moderation ) {
-            const text = completion.choices[0].message.content;
-            const moderation_result = await this.check_moderation(text);
-            if ( moderation_result.flagged ) {
-                throw new Error('message is not allowed');
-            }
-        }
-        
-        const ret = completion.choices[0];
-        ret.usage = {
-            input_tokens: completion.usage.prompt_tokens,
-            output_tokens: completion.usage.completion_tokens,
-        };
-        return ret;
     }
 }
 
